@@ -20,6 +20,9 @@ from torchvision.transforms._transforms_video import NormalizeVideo
 
 from imagebind.models.multimodal_preprocessors import SimpleTokenizer
 
+from torchvision.transforms import Compose, Normalize
+import torch.nn.functional as F
+
 DEFAULT_AUDIO_FRAME_SHIFT_MS = 10  # in milliseconds
 
 BPE_PATH = "bpe/bpe_simple_vocab_16e6.txt.gz"
@@ -336,5 +339,70 @@ def load_and_transform_video_data(
 
         all_video = torch.stack(all_video, dim=0)
         video_outputs.append(all_video)
+
+def transform_and_sample_video_tensor(
+    video_tensor,
+    device,
+    clip_duration=0.25,
+    clips_per_video=40,
+    target_size=224,
+    # Assume video_tensor is in (num_frames, x, y, 3) format
+):
+    video_transform = Compose([
+        Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])]
+    )
+
+    total_frames = video_tensor.shape[0]
+    frames_per_clip = int(total_frames / clips_per_video)
+
+    all_clips = []
+    for i in range(clips_per_video):
+      start_frame = i*frames_per_clip
+      end_frame = start_frame + frames_per_clip
+      clip = video_tensor[start_frame:end_frame]
+
+      clip = clip/255
+      clip = clip.permute(0, 3, 1, 2)
+      clip = video_transform(clip)
+
+      all_clips.append(clip)
+    
+    video_tensor = torch.stack(all_clips, dim=0).to(device)
+
+    num_clips, num_frames, channels, height, width = video_tensor.shape
+
+    scale_factor = target_size / min(height, width)
+    new_height, new_width = int(height * scale_factor), int(width * scale_factor)
+    
+    # Initialize a list to hold the processed clips
+    new_clips = []
+    
+    for clip in video_tensor:
+        clip = clip.permute(0, 2, 3, 1).float()  # Changing to [num_frames, height, width, channels]
+        clip = clip.permute(0, 3, 1, 2)  # Now [num_frames, channels, height, width], suitable for F.interpolate
+        scaled_clip = F.interpolate(clip, size=(new_height, new_width), mode='bilinear', align_corners=False)
+        
+        # After scaling, we crop the center to ensure it's 224x224
+        # Calculate the start point for cropping
+        crop_start_height = max((new_height - target_size) // 2, 0)
+        crop_start_width = max((new_width - target_size) // 2, 0)
+        
+        # Crop
+        cropped_clip = scaled_clip[:, :, crop_start_height:crop_start_height + target_size, crop_start_width:crop_start_width + target_size]
+        
+        # Permute back to [num_frames, height, width, channels] before appending
+        cropped_clip = cropped_clip.permute(0, 2, 3, 1)
+        
+        new_clips.append(cropped_clip)
+    
+    # Stack all the processed clips together
+    scaled_and_cropped_video = torch.stack(new_clips, dim=0)
+    
+    # Ensure the output is of the same dtype as the input (likely uint8 if input are images)
+    scaled_and_cropped_video = scaled_and_cropped_video.to(dtype=video_tensor.dtype)
+
+    scaled_and_cropped_video = scaled_and_cropped_video.permute(0, 1, 4, 2, 3)
+    
+    return scaled_and_cropped_video
 
     return torch.stack(video_outputs, dim=0).to(device)
