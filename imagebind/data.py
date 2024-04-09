@@ -340,6 +340,8 @@ def load_and_transform_video_data(
         all_video = torch.stack(all_video, dim=0)
         video_outputs.append(all_video)
 
+    return torch.stack(video_outputs, dim=0).to(device)
+
 def transform_and_sample_video_tensor(
     video_tensor,
     device,
@@ -404,5 +406,3 @@ def transform_and_sample_video_tensor(
     scaled_and_cropped_video = scaled_and_cropped_video.permute(0, 1, 4, 2, 3)
     
     return scaled_and_cropped_video
-
-    return torch.stack(video_outputs, dim=0).to(device)
