@@ -17,6 +17,7 @@ from pytorchvideo.data.clip_sampling import ConstantClipsPerVideoSampler
 from pytorchvideo.data.encoded_video import EncodedVideo
 from torchvision import transforms
 from torchvision.transforms._transforms_video import NormalizeVideo
+from torchvision.transforms import Normalize
 
 from imagebind.models.multimodal_preprocessors import SimpleTokenizer
 
@@ -406,3 +407,53 @@ def transform_and_sample_video_tensor(
     scaled_and_cropped_video = scaled_and_cropped_video.permute(0, 1, 4, 2, 3)
     
     return scaled_and_cropped_video
+
+def load_and_transform_audio_data_tensors(
+    audio_tensors,
+    sample_rates,
+    device,
+    num_mel_bins=128,
+    target_length=204,
+    desired_sample_rate=16000,
+    clip_duration=2,
+    clips_per_video=3,
+    mean=-4.268,
+    std=9.138,
+):
+    if audio_tensors is None:
+        return None
+
+    audio_outputs = []
+    clip_sampler = ConstantClipsPerVideoSampler(
+        clip_duration=clip_duration, clips_per_video=clips_per_video
+    )
+
+    for waveform, sr in zip(audio_tensors, sample_rates):
+        if desired_sample_rate != sr:
+            waveform = torchaudio.functional.resample(
+                waveform, orig_freq=sr, new_freq=desired_sample_rate
+            )
+        
+        all_clips_timepoints = get_clip_timepoints(
+            clip_sampler, waveform.size(1) / desired_sample_rate
+        )
+        all_clips = []
+        for clip_timepoints in all_clips_timepoints:
+            waveform_clip = waveform[
+                :,
+                int(clip_timepoints[0] * desired_sample_rate) : int(
+                    clip_timepoints[1] * desired_sample_rate
+                ),
+            ]
+            waveform_melspec = waveform2melspec(
+                waveform_clip, desired_sample_rate, num_mel_bins, target_length
+            )
+            all_clips.append(waveform_melspec)
+
+        normalize = Normalize(mean=mean, std=std)
+        all_clips = [normalize(ac).to(device) for ac in all_clips]
+
+        all_clips = torch.stack(all_clips, dim=0)
+        audio_outputs.append(all_clips)
+
+    return torch.stack(audio_outputs, dim=0)
